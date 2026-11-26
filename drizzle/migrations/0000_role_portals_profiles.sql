@@ -1,0 +1,18 @@
+CREATE TYPE public.app_role AS ENUM ('agent', 'manager', 'finance', 'admin');
+CREATE TABLE public.profiles (id uuid PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE, display_name text NOT NULL DEFAULT 'TravelOS user');
+GRANT SELECT, UPDATE ON public.profiles TO authenticated;
+GRANT ALL ON public.profiles TO service_role;
+ALTER TABLE public.profiles ENABLE ROW LEVEL SECURITY;
+CREATE POLICY own_profile_read ON public.profiles FOR SELECT TO authenticated USING (id = auth.uid());
+CREATE POLICY own_profile_update ON public.profiles FOR UPDATE TO authenticated USING (id = auth.uid()) WITH CHECK (id = auth.uid());
+CREATE TABLE public.user_roles (user_id uuid PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE, role public.app_role NOT NULL);
+GRANT SELECT ON public.user_roles TO authenticated;
+GRANT ALL ON public.user_roles TO service_role;
+ALTER TABLE public.user_roles ENABLE ROW LEVEL SECURITY;
+CREATE POLICY own_role_read ON public.user_roles FOR SELECT TO authenticated USING (user_id = auth.uid());
+CREATE FUNCTION public.has_role(_user_id uuid, _role public.app_role) RETURNS boolean LANGUAGE sql STABLE SECURITY DEFINER SET search_path = public AS $$ SELECT EXISTS (SELECT 1 FROM public.user_roles WHERE user_id = _user_id AND role = _role) $$;
+REVOKE ALL ON FUNCTION public.has_role(uuid, public.app_role) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.has_role(uuid, public.app_role) TO authenticated, service_role;
+CREATE FUNCTION public.create_profile() RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER SET search_path = public AS $$ BEGIN INSERT INTO public.profiles(id, display_name) VALUES (NEW.id, COALESCE(NULLIF(NEW.raw_user_meta_data->>'display_name', ''), split_part(NEW.email, '@', 1), 'TravelOS user')); RETURN NEW; END $$;
+CREATE TRIGGER travelos_profile_created AFTER INSERT ON auth.users FOR EACH ROW EXECUTE FUNCTION public.create_profile();
+INSERT INTO public.profiles(id, display_name) SELECT id, COALESCE(NULLIF(raw_user_meta_data->>'display_name', ''), split_part(email, '@', 1), 'TravelOS user') FROM auth.users ON CONFLICT (id) DO NOTHING;
